@@ -6,7 +6,6 @@ This repository documents an ongoing independent investigation into the infrastr
 - Dozens of IPv4/IPv6 blocks announce hundreds of domains with identical behavior
 - Domains resolve to wildcard DNS, invalid HTTPS certs, and respond HTTP 200 with blank or 404 pages
 - Reverse DNS and reverse IP shows thousands of inactive domains parked on suspicious infrastructure
-- Some domains redirect to residential IPs (e.g., UK VirginMedia), Emby servers, or phishing clones
 - Likely use of Tier 1 provider (Telia AS1299) to make filtering harder
 
 ## Tools Used
