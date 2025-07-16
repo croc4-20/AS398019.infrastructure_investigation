@@ -1,87 +1,67 @@
-import subprocess
-import socket
-import ssl
 import csv
-import os
-from urllib.parse import urlparse
 import requests
-from concurrent.futures import ThreadPoolExecutor
+import ssl
+import socket
+from urllib.parse import urlparse
+from http.client import HTTPConnection, HTTPSConnection
+from OpenSSL import crypto
 
-
-# === CONFIGURATION ===
-INPUT_IP_LIST = "live_ipv4.txt"  # One IP per line
-OUTPUT_DIR = "ip_scans"
-PORTS = [80, 443]
-THREADS = 50
 TIMEOUT = 5
 
 
-# === HELPERS ===
-def reverse_dns(ip):
-    try:
-        return socket.gethostbyaddr(ip)[0]
-    except:
-        return ""
-
-def extract_cert_domains(ip):
-    try:
-        ctx = ssl.create_default_context()
-        with socket.create_connection((ip, 443), timeout=TIMEOUT) as sock:
-            with ctx.wrap_socket(sock, server_hostname=ip) as ssock:
-                cert = ssock.getpeercert()
-                names = []
-                if "subject" in cert:
-                    for part in cert["subject"]:
-                        if part[0][0] == "commonName":
-                            names.append(part[0][1])
-                if "subjectAltName" in cert:
-                    for typ, name in cert["subjectAltName"]:
-                        if typ == "DNS":
-                            names.append(name)
-                return list(set(names))
-    except:
-        return []
-
-def fetch_status(domain):
+def get_http_info(domain):
     try:
         url = f"http://{domain}"
-        resp = requests.get(url, timeout=TIMEOUT)
-        content = resp.text.lower()
-        status = resp.status_code
-        if status == 200 and ("404" in content or "not found" in content):
-            return (domain, 200, "fake_404")
-        return (domain, status, "ok" if status == 200 else "other")
-    except:
-        return (domain, "error", "error")
+        response = requests.get(url, timeout=TIMEOUT)
+        status_code = response.status_code
+        body = response.text.lower()
+        fake_404 = status_code == 200 and '404' in body
+        return status_code, fake_404
+    except Exception:
+        return None, False
 
-def process_ip(ip):
-    result = []
-    rdns = reverse_dns(ip)
-    domains = set()
-    if rdns:
-        domains.add(rdns)
-    domains.update(extract_cert_domains(ip))
 
-    rows = []
-    for domain in domains:
-        domain, status, tag = fetch_status(domain)
-        rows.append({"ip": ip, "domain": domain, "http_code": status, "type": tag})
+def get_cert_info(domain):
+    try:
+        context = ssl.create_default_context()
+        with socket.create_connection((domain, 443), timeout=TIMEOUT) as sock:
+            with context.wrap_socket(sock, server_hostname=domain) as ssock:
+                cert = ssock.getpeercert()
+                subject = dict(x[0] for x in cert['subject'])
+                cn = subject.get('commonName', '')
+                not_after = cert.get('notAfter', '')
+                return cn, not_after
+    except Exception:
+        return '', ''
 
-    # Save to CSV
-    os.makedirs(OUTPUT_DIR, exist_ok=True)
-    output_path = os.path.join(OUTPUT_DIR, f"{ip}.csv")
-    with open(output_path, "w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=["ip", "domain", "http_code", "type"])
+
+def enrich_csv(input_file, output_file):
+    with open(input_file, newline='') as infile, open(output_file, 'w', newline='') as outfile:
+        reader = csv.DictReader(infile)
+        fieldnames = reader.fieldnames + ['HTTP_Status', 'Fake_404', 'Cert_CN', 'Cert_Expiry']
+        writer = csv.DictWriter(outfile, fieldnames=fieldnames)
         writer.writeheader()
-        for row in rows:
+
+        for row in reader:
+            domain = row.get('domain') or row.get('Domain') or row.get('host')
+            if not domain:
+                continue
+
+            status, fake_404 = get_http_info(domain)
+            cn, expiry = get_cert_info(domain)
+
+            row['HTTP_Status'] = status if status else 'N/A'
+            row['Fake_404'] = 'Yes' if fake_404 else 'No'
+            row['Cert_CN'] = cn
+            row['Cert_Expiry'] = expiry
+
             writer.writerow(row)
-    print(f"Done {ip}: {len(rows)} domains")
 
 
-# === MAIN EXECUTION ===
-if __name__ == "__main__":
-    with open(INPUT_IP_LIST) as f:
-        ip_list = [line.strip() for line in f if line.strip()]
+if __name__ == '__main__':
+    import sys
+    if len(sys.argv) != 3:
+        print("Usage: python3 IP_SCAN_PIPELINE.py input.csv output.csv")
+        exit(1)
 
-    with ThreadPoolExecutor(max_workers=THREADS) as executor:
-        executor.map(process_ip, ip_list)
+    enrich_csv(sys.argv[1], sys.argv[2])
